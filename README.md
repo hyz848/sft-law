@@ -31,7 +31,7 @@
 | 输入 | 一句生活语言的法律问题，实测平均 68.6 字、最长 333 字 |
 | 输出 | 一个部法名，必须落在 50 类标签集内 |
 | 标签 | 50 部法，来自 Triplet 的 `reference` 字段（零人工标注） |
-| 基座 | Qwen3-1.7B-Instruct（Apache 2.0）+ QLoRA 4bit |
+| 基座 | Qwen3-1.7B（Apache 2.0）+ QLoRA 4bit |
 | 框架 | 主线 LLaMA-Factory（AutoDL）+ Unsloth；魔搭上换 ms-swift |
 | 指标 | accuracy、macro-F1、top-3、混淆矩阵 |
 | 数据 | 22,922 条「问题 → 部法」，train / val / test = 18,338 / 2,292 / 2,292 |
@@ -212,7 +212,7 @@ python scripts/eval_cls.py --adapter <适配器目录>     # 再量微调后
 pip install ms-swift -U
 # 数据放 /mnt/workspace/cls/，产物落 /mnt/workspace/output/cls_qwen3
 swift sft \
-  --model Qwen/Qwen3-1.7B-Instruct \
+  --model Qwen/Qwen3-1.7B \
   --tuner_type lora \
   --quant_method bnb --quant_bits 4 \
   --dataset /mnt/workspace/cls/train.jsonl \
@@ -235,7 +235,7 @@ llamafactory-cli chat cls_qlora.yaml        # 试聊
 
 yaml 里 dataset 填**注册名**（`cls_law`），不是文件路径——这是最常见的报错来源。完整参数、自检命令、混淆矩阵读法见 [`docs/finetune-qwen-law-sft.md`](docs/finetune-qwen-law-sft.md)。
 
-训练配置（两个平台同一套）：基座 Qwen3-1.7B-Instruct、QLoRA 4bit（NF4 + 双量化）、r=16 / α=32 挂 attention + FFN、lr 2e-4 cosine + warmup、epoch 2、max_len 512。
+训练配置（两个平台同一套）：基座 Qwen3-1.7B、QLoRA 4bit（NF4 + 双量化）、r=16 / α=32 挂 attention + FFN、lr 2e-4 cosine + warmup、epoch 2、max_len 512。
 
 显存账（24G 卡真实占用不到三分之一）：基座 ≈0.9G + LoRA 权重/梯度/优化器 ≈0.3G + 激活 ≈2~4G + CUDA 上下文 ≈1~2G = **约 5~7G**。
 

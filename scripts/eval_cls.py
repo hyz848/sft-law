@@ -21,7 +21,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = "Qwen/Qwen3-1.7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen3-1.7B"
 DEFAULT_DATA = str(ROOT / "data" / "cls" / "export" / "test_eval.jsonl")
 DEFAULT_LABELS = str(ROOT / "data" / "cls" / "label_stats.json")
 DEFAULT_PROMPT = "请判断以下法律问题应适用哪部法律。只输出法律名称，不要解释。"
