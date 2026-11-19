@@ -35,6 +35,11 @@ ok "$RUN_DIR"
 echo "  含 checkpoint：$(ls -1d "$RUN_DIR"/checkpoint-* 2>/dev/null | wc -l) 个"
 
 say "2/5 挑验证准确率最高的 checkpoint"
+FORCE_STEP="${CKPT_STEP:-}"
+if [ -n "$FORCE_STEP" ]; then
+  BEST_STEP="$FORCE_STEP"; BEST_ACC="manual"
+  ok "按 CKPT_STEP 指定：checkpoint-$BEST_STEP"
+else
 PICKED=$("$PY" - "$RUN_DIR" <<'PY'
 import glob, json, os, sys
 run = sys.argv[1]
@@ -71,11 +76,21 @@ if [ -z "$PICKED" ]; then
 fi
 BEST_STEP=$(echo "$PICKED" | awk '{print $1}')
 BEST_ACC=$(echo "$PICKED" | awk '{print $2}')
-CKPT="$RUN_DIR/checkpoint-$BEST_STEP"
-[ -d "$CKPT" ] || die "checkpoint 目录不存在：$CKPT"
 if [ "$BEST_ACC" = "0" ]; then
   warn "日志里没有 eval_accuracy，退回用最后一个 checkpoint-$BEST_STEP"
-else
+  echo "  日志中出现的评估相关键（用于定位真实指标名）："
+  grep -ho '"eval[a-zA-Z_]*"' "$RUN_DIR"/logging.jsonl "$RUN_DIR"/trainer_state.json 2>/dev/null | sort -u | head -8
+  echo "  想强制指定就用：CKPT_STEP=<步数> MODELSCOPE_TOKEN=... bash scripts/push_adapter.sh"
+fi
+fi
+if [ -z "${BEST_STEP:-}" ]; then
+  die "没能确定 checkpoint，用 CKPT_STEP=<步数> 手动指定"
+fi
+CKPT="$RUN_DIR/checkpoint-$BEST_STEP"
+[ -d "$CKPT" ] || die "checkpoint 目录不存在：$CKPT（可用 ls $RUN_DIR 看实际有哪些）"
+if [ "$BEST_ACC" = "manual" ]; then
+  ok "使用指定 checkpoint-$BEST_STEP"
+elif [ "$BEST_ACC" != "0" ]; then
   ok "best = checkpoint-$BEST_STEP（eval_accuracy=$BEST_ACC）"
 fi
 
@@ -89,6 +104,23 @@ for f in adapter_config.json adapter_model.safetensors adapter_model.bin additio
   fi
 done
 [ "$found" -ge 2 ] || die "$CKPT 里没有 adapter_config.json + 权重文件，确认这是 MS-Swift 的 LoRA 输出目录"
+
+# 容器内的绝对路径会跟着 adapter 一起被交出去，别的机器加载直接报路径不存在
+if [ -f "$STAGE/adapter_config.json" ]; then
+  "$PY" - "$STAGE/adapter_config.json" "${BASE_MODEL_ID:-Qwen/Qwen3-1.7B}" <<'PYCFG'
+import json, sys
+p, pub = sys.argv[1], sys.argv[2]
+d = json.load(open(p, encoding="utf-8"))
+old = d.get("base_model_name_or_path", "")
+if old.startswith("/") or "\\" in old:
+    d["base_model_name_or_path"] = pub
+    json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    print("  base_model_name_or_path：%s -> %s" % (old, pub))
+else:
+    print("  base_model_name_or_path =", old)
+PYCFG
+fi
+
 ls -lh "$STAGE"
 SIZE_MB=$(du -sm "$STAGE" | awk '{print $1}')
 if [ "$SIZE_MB" -gt 500 ]; then
