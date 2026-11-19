@@ -65,9 +65,23 @@ TEST="$ROOT/data/cls/export/test_eval.jsonl"
 for f in "$TRAIN" "$VAL" "$TEST"; do
   [ -f "$f" ] || die "缺文件：$f"
 done
+
+# 数据走 Git LFS：没装 lfs 或 clone 时跳过了 smudge，拿到的是三行指针文本
+if head -c 60 "$TRAIN" | grep -q "git-lfs"; then
+  echo "检测到 Git LFS 指针文件，开始拉取真实数据……"
+  if ! command -v git-lfs >/dev/null 2>&1; then
+    echo "没装 git-lfs，尝试安装"
+    (apt-get install -y git-lfs >/dev/null 2>&1 || pip install -q git-lfs >/dev/null 2>&1) || true
+  fi
+  command -v git-lfs >/dev/null 2>&1 || die "装不上 git-lfs：apt-get install -y git-lfs 后再跑一次"
+  git lfs install --skip-repo >/dev/null 2>&1 || true
+  git lfs pull --include="data/**/*.jsonl" || die "LFS 拉取失败（GitHub LFS 走公网，慢的话重跑一次）"
+fi
+
 echo "train $(wc -l < "$TRAIN") 行"
 echo "val   $(wc -l < "$VAL") 行"
 echo "test  $(wc -l < "$TEST") 行"
+[ "$(wc -l < "$TRAIN")" -gt 1000 ] || die "train 只有 $(wc -l < "$TRAIN") 行，还是指针文件，手动从本机把 data/cls/export/ms_swift/*.jsonl 拖进来"
 head -n 1 "$TRAIN" | grep -q '"query"' || die "train 字段不是 query，重新跑 scripts/export_platform_data.py"
 
 if [ "$SMOKE" = "1" ]; then
