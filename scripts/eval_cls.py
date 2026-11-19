@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -100,9 +101,27 @@ def main() -> None:
     model.eval()
 
     # 候选标签的 token 序列先编码好，避免每条样本重复 tokenize
-    label_ids = {lab: tokenizer(lab, add_special_tokens=False).input_ids for lab in labels}
     eos = tokenizer.eos_token_id
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+    label_ids: dict[str, list[int]] = {}
+    for lab in labels:
+        ids = tokenizer(lab, add_special_tokens=False).input_ids
+        label_ids[lab] = ids + ([eos] if eos is not None else [])
+
+    # 打分索引矩阵：一次 gather 取回全部候选的 logprob。
+    # 逐 token .item() 会触发上千次 GPU->CPU 同步；对全词表做 float+softmax 还要多占约 5GB 显存。
+    dev = next(model.parameters()).device
+    Lmax = max(len(v) for v in label_ids.values())
+    idx_pos = torch.zeros((len(labels), Lmax), dtype=torch.long, device=dev)
+    idx_tok = torch.zeros((len(labels), Lmax), dtype=torch.long, device=dev)
+    idx_mask = torch.zeros((len(labels), Lmax), dtype=torch.float32, device=dev)
+    for li, lab in enumerate(labels):
+        ids = label_ids[lab]
+        idx_pos[li, : len(ids)] = torch.arange(len(ids), device=dev)
+        idx_tok[li, : len(ids)] = torch.tensor(ids, device=dev)
+        idx_mask[li, : len(ids)] = 1.0
+    label_len_sum = idx_mask.sum(1).clamp(min=1.0)
+    row_idx = torch.arange(len(labels), device=dev)
 
     correct = 0
     top3_hits = 0
@@ -110,31 +129,30 @@ def main() -> None:
     per_class_hit: Counter[str] = Counter()
     confusion: dict[str, Counter[str]] = defaultdict(Counter)
 
+    t0 = time.time()
     with torch.inference_mode():
         for i, row in enumerate(rows, 1):
             prefix = build_prompt_ids(tokenizer, args.prompt, row["question"])
 
             # 50 个候选拼成一个 batch，一次前向算完，比逐个候选快约 50 倍
-            seqs = [prefix + label_ids[lab] + ([eos] if eos is not None else []) for lab in labels]
+            seqs = [prefix + label_ids[lab] for lab in labels]
             maxlen = max(len(s) for s in seqs)
             padded = [s + [pad_id] * (maxlen - len(s)) for s in seqs]
-            input_ids = torch.tensor(padded, device=model.device)
+            input_ids = torch.tensor(padded, device=dev)
             attention_mask = (input_ids != pad_id).long()
 
-            logits = model(input_ids=input_ids, attention_mask=attention_mask).logits.float()
-            logprobs = torch.log_softmax(logits, dim=-1)
+            logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
 
-            scores: dict[str, float] = {}
+            # 只在候选标签所在的时间步上取 logits，避免 (50, T, vocab) 全量转 float
             offset = len(prefix) - 1
-            for row_i, lab in enumerate(labels):
-                ids = label_ids[lab] + ([eos] if eos is not None else [])
-                total = 0.0
-                for j, tid in enumerate(ids):
-                    total += logprobs[row_i, offset + j, tid].item()
-                # 长度归一化：按 token 数取平均
-                scores[lab] = total / len(ids)
+            sel = logits[row_idx, idx_pos + offset, :]          # (50, Lmax, vocab)
+            lse = torch.logsumexp(sel.float(), dim=-1)          # (50, Lmax)
+            got = sel.gather(-1, idx_tok.unsqueeze(-1)).squeeze(-1).float()
+            lp = (got - lse) * idx_mask                         # pad 位清零
+            # 长度归一化：按 token 数取平均，否则短标签会被系统性偏爱
+            scores = (lp.sum(1) / label_len_sum).tolist()
 
-            ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+            ranked = sorted(zip(labels, scores), key=lambda kv: -kv[1])
             pred = ranked[0][0]
             gold = row["label"]
             per_class_total[gold] += 1
@@ -146,7 +164,13 @@ def main() -> None:
                 top3_hits += 1
 
             if i % 100 == 0 or i == len(rows):
-                print(f"  {i}/{len(rows)}  accuracy={correct / i:.4f}")
+                elapsed = time.time() - t0
+                eta = elapsed / i * (len(rows) - i)
+                print(
+                    f"  {i}/{len(rows)}  accuracy={correct / i:.4f}"
+                    f"  {i / elapsed:.2f} 条/秒  ETA {eta / 60:.1f} 分钟",
+                    flush=True,
+                )
 
     n = len(rows)
     accuracy = correct / n if n else 0.0
