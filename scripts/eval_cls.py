@@ -105,10 +105,18 @@ def build_prompt_ids(tokenizer, instruction: str, question: str) -> list[int]:
     messages = [{"role": "user", "content": f"{instruction}\n\n问题：{question}"}]
     kwargs = dict(add_generation_prompt=True, tokenize=True, return_tensors=None)
     try:
-        return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+        out = tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
     except TypeError:
         # 老版本 tokenizer 不认 enable_thinking
-        return tokenizer.apply_chat_template(messages, **kwargs)
+        out = tokenizer.apply_chat_template(messages, **kwargs)
+    # 新版 transformers 返回 BatchEncoding（含 batch 维），老版返回 list[int]，统一成扁平 list
+    if hasattr(out, "input_ids"):
+        out = out.input_ids
+    if hasattr(out, "tolist"):
+        out = out.tolist()
+    if out and isinstance(out[0], (list, tuple)):
+        out = out[0]
+    return list(out)
 
 
 def main() -> None:
