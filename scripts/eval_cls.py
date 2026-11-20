@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter, defaultdict
@@ -26,6 +27,46 @@ DEFAULT_MODEL = "Qwen/Qwen3-1.7B"
 DEFAULT_DATA = str(ROOT / "data" / "cls" / "export" / "test_eval.jsonl")
 DEFAULT_LABELS = str(ROOT / "data" / "cls" / "label_stats.json")
 DEFAULT_PROMPT = "请判断以下法律问题应适用哪部法律。只输出法律名称，不要解释。"
+
+
+def resolve_model(name: str) -> str:
+    """把 Qwen/Qwen3-1.7B 这类 Hub id 换成容器里已有的本地目录。
+
+    魔搭实例外网受限，离线状态下 transformers 会一直重试 huggingface.co 然后失败。
+    训练时的权重已经落在 modelscope 缓存里，直接复用即可。
+    """
+    p = Path(name).expanduser()
+    if p.is_dir():
+        return str(p)
+    if "/" not in name:
+        return name
+    owner, short = name.split("/", 1)
+    pat = f"{owner}--{short}"
+    roots = [
+        Path("/mnt/workspace/.cache"),
+        Path(os.environ.get("MODELSCOPE_CACHE", "")) if os.environ.get("MODELSCOPE_CACHE") else None,
+        Path.home() / ".cache",
+        Path("/root/.cache"),
+        Path("/mnt/workspace"),
+    ]
+    for root in roots:
+        if root is None or not root.is_dir():
+            continue
+        for base in (
+            root / "modelscope" / "models",
+            root / "modelscope" / "hub" / "models",
+            root / "hub" / "models",
+            root / "models",
+        ):
+            for d in (base / pat, base / name):
+                if (d / "config.json").is_file():
+                    return str(d)
+                snaps = d / "snapshots"
+                if snaps.is_dir():
+                    for s in sorted(snaps.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+                        if (s / "config.json").is_file():
+                            return str(s)
+    return name
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,12 +125,21 @@ def main() -> None:
 
     labels = load_labels(args.labels_from)
     rows = load_rows(args.data, args.limit)
-    print(f"评测集 {len(rows)} 条 · 标签 {len(labels)} 类 · 基座 {args.model}")
+
+    resolved = resolve_model(args.model)
+    if resolved != args.model:
+        print(f"基座命中本地缓存：{resolved}")
+    elif "/" in args.model:
+        print(
+            f"[警告] 本地找不到 {args.model} 的缓存，将尝试联网。魔搭实例外网通常不通，"
+            f"失败时先跑：modelscope download {args.model} --local-dir /mnt/workspace/models/Qwen3-1.7B"
+        )
+    print(f"评测集 {len(rows)} 条 · 标签 {len(labels)} 类")
     print(f"模式：{'zero-shot 基线' if args.no_adapter else '微调后 ' + str(args.adapter)}")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(resolved, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
+        resolved,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
