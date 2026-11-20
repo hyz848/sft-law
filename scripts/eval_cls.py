@@ -203,7 +203,8 @@ def main() -> None:
 
             # 只在候选标签所在的时间步上取 logits，避免 (50, T, vocab) 全量转 float
             offset = len(prefix) - 1
-            sel = logits[row_idx, idx_pos + offset, :]          # (50, Lmax, vocab)
+            # row_idx 要扩成 (50,1) 才能和 (50,Lmax) 的时间步索引一起广播
+            sel = logits[row_idx[:, None], idx_pos + offset, :]  # (50, Lmax, vocab)
             lse = torch.logsumexp(sel.float(), dim=-1)          # (50, Lmax)
             got = sel.gather(-1, idx_tok.unsqueeze(-1)).squeeze(-1).float()
             lp = (got - lse) * idx_mask                         # pad 位清零
