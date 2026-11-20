@@ -133,6 +133,14 @@ def build_html(args, base: dict, ft: dict, curves_png: bytes | None, cm_png: byt
         for g, p, n in conf_pairs
     )
 
+    # 混淆方向的总结必须跟着实际数据走，写死会在换模型/换数据后自相矛盾
+    if conf_pairs:
+        top_txt = "、".join(
+            f"「{html.escape(g)}」→「{html.escape(p)}」（{n} 次）" for g, p, n in conf_pairs[:3]
+        )
+    else:
+        top_txt = "无明显集中方向"
+
     curves_block = (
         f'<section><h2>训练曲线</h2><div class="fig">{img_tag(curves_png)}</div>'
         f'<p class="muted">上排左：训练 / 验证 loss；上排右：验证准确率，虚线是 50 类随机猜的 0.02；'
@@ -228,7 +236,7 @@ footer{{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:
 <thead><tr><th>真实</th><th>被误判为</th><th class="num">次数</th><th class="num">占全部错误</th></tr></thead>
 <tbody>{conf_rows}</tbody>
 </table>
-<p class="muted">共 {wrong} 条判错。典型难分对：民法典 / 民事诉讼法、刑法 / 刑事诉讼法——法条交叉引用多，问题描述天然模糊。</p>
+<p class="muted">共 {wrong} 条判错（占 {wrong / ft['n'] * 100:.2f}%）。最主要的混淆方向：{top_txt}——同属一个法域或条文互相援引，边界天然模糊。</p>
 
 {cm_block}
 
